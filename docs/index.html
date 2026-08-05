@@ -104,7 +104,10 @@
         <div class="status-top-v3">
           <div class="date-box" id="dateBox"></div>
           <div class="ap-box" id="apBox"></div>
+          <div class="v2-bars" id="v2Bars"></div>
         </div>
+        <div class="v2-timeline" id="v2Timeline"></div>
+        <div class="goal-card" id="goalCard"></div>
         <div class="stats-grid" id="statsGrid"></div>
         <div class="path-partner-bar" id="pathPartnerBar"></div>
       </div>
@@ -144,10 +147,33 @@
       </div>
       <div class="ending-buttons">
         <button class="btn-main" onclick="Game.reset()">再来一局</button>
-        <button class="btn-secondary" onclick="Share.screenshot()">📸 分享我的考公人档案</button>
-        <button class="btn-secondary" onclick="Share.copyText()">📋 复制文案分享</button>
+        <button class="btn-secondary" onclick="Share.screenshot()">📸 生成分享图</button>
+        <button class="btn-secondary" onclick="Share.copyText()">📋 复制文案</button>
+        <button class="btn-secondary" onclick="Leaderboard.show()">🏆 查看排行榜</button>
       </div>
-      <div class="footer-text">《上岸模拟器》v0.6</div>
+      <div class="footer-text">《上岸模拟器》v0.9.2</div>
+    </div>
+  </section>
+
+  <!-- 排行榜 -->
+  <section id="screen-leaderboard" class="screen">
+    <div class="container leaderboard-container">
+      <div class="leaderboard-header">
+        <div class="leaderboard-title">🏆 考公人排行榜</div>
+        <div class="leaderboard-sub">已记录 <span id="lbTotalCount">0</span> 位玩家</div>
+      </div>
+      <div class="leaderboard-tabs">
+        <div class="lb-tab active" data-tab="my">我的战绩</div>
+        <div class="lb-tab" data-tab="total">总分榜</div>
+        <div class="lb-tab" data-tab="ending">结局榜</div>
+        <div class="lb-tab" data-tab="survival">生存天榜</div>
+      </div>
+      <div class="leaderboard-list" id="lbList"></div>
+      <div class="leaderboard-actions">
+        <button class="btn-secondary" onclick="Leaderboard.addFriend()">➕ 添加假想好友</button>
+        <button class="btn-secondary" onclick="Leaderboard.share()">📤 分享我的成绩</button>
+        <button class="btn-main" onclick="Leaderboard.close()">返回</button>
+      </div>
     </div>
   </section>
 

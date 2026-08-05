@@ -18,9 +18,9 @@ const Player = {
   hour: 8,                  // 当天当前时刻（小时，可为小数 0-24）
   daysPlayed: 0,
   totalDays: 12 * 30,
-  // 体力 & 睡眠
-  ap: 4,
-  apMax: 4,
+  // 体力 & 睡眠 (v0.9.2 移除AP体力点，改为时间制)
+  ap: 999,
+  apMax: 999,
   sleepStart: 23,           // 昨晚入睡时刻（小时）
   sleepHours: 8,            // 昨晚睡了多少小时
   consecutiveEarly: 0,      // 连续早起天数
@@ -38,6 +38,15 @@ const Player = {
   // 内部
   pendingWake: true,        // 当天是否还需选择起床
   nightAlarm: 8,            // 闹钟设置时间
+  // v2 数值系统：精力（快变量）+ 精神（慢变量）+ 疲劳/状态机
+  energy: 80, energyMax: 80,        // 精力：日内可回充
+  studyHoursToday: 0,               // 今日累计学习时长
+  focusBlocks: 0,                   // 连续专注块
+  restedSinceBlock: true,           // 上一动作是否为休息（用于清零专注块）
+  status: "healthy",                // healthy|hangover|allnighter|breakdown|sick|severe
+  napCount: 0,                      // 当日小憩次数
+  todaySolo: 0, todaySocial: 0,     // 当日独处/社交动作计数（I/E 彩蛋用）
+  soloStreak: 0, socialStreak: 0,   // 连续纯独处/无社交天数
 };
 
 // ========== 节日/里程碑 ==========
@@ -70,7 +79,7 @@ function showScreen(id) {
 function toast(msg, type = "normal", duration = 1800) {
   const t = $("toast");
   t.textContent = msg;
-  t.className = type === "achievement" ? "show achievement" : "show";
+  t.className = type === "achievement" ? "show achievement" : (type === "warning" ? "show warning" : "show");
   clearTimeout(t._timer);
   t._timer = setTimeout(() => t.classList.remove("show"), duration);
 }
@@ -98,6 +107,12 @@ const SaveSystem = {
         actionLog: [...Player.actionLog],
         pendingWake: Player.pendingWake, nightAlarm: Player.nightAlarm,
         _examScore: Player._examScore || null,
+        // v2 数值系统字段
+        energy: Player.energy, energyMax: Player.energyMax,
+        status: Player.status, napCount: Player.napCount,
+        studyHoursToday: Player.studyHoursToday, focusBlocks: Player.focusBlocks,
+        restedSinceBlock: Player.restedSinceBlock,
+        todaySolo: Player.todaySolo, todaySocial: Player.todaySocial,
       }
     };
     try {
@@ -203,13 +218,7 @@ const UI = {
     setTimeout(() => card.classList.remove("just-executed"), 700);
   }
 };
-function toast(msg, type = "normal", duration = 1800) {
-  const t = $("toast");
-  t.textContent = msg;
-  t.className = type === "achievement" ? "show achievement" : "show";
-  clearTimeout(t._timer);
-  t._timer = setTimeout(() => t.classList.remove("show"), duration);
-}
+// （删除了第221行重复的 toast 定义）
 
 // ========== 主流程 ==========
 const Game = {
@@ -283,6 +292,16 @@ const Game = {
     Player.lastProvinceEventDay = p.lastProvinceEventDay || 0;
     // v0.8: 恢复嘲讽NPC记录
     Player._mockeryNPCs = p._mockeryNPCs || [];
+    // v2 数值系统字段恢复
+    Player.energy = (p.energy != null) ? p.energy : 80;
+    Player.energyMax = (p.energyMax != null) ? p.energyMax : 80;
+    Player.status = p.status || "healthy";
+    Player.napCount = p.napCount || 0;
+    Player.studyHoursToday = p.studyHoursToday || 0;
+    Player.focusBlocks = p.focusBlocks || 0;
+    Player.restedSinceBlock = p.restedSinceBlock !== false;
+    Player.todaySolo = p.todaySolo || 0; Player.todaySocial = p.todaySocial || 0;
+    Player.soloStreak = p.soloStreak || 0; Player.socialStreak = p.socialStreak || 0;
 
     toast(`📂 已续读 · ${Player.month}月${Player.day}日 第${Player.daysPlayed + 1}天`, "achievement", 2000);
     showScreen("screen-game");
@@ -328,6 +347,7 @@ const Game = {
   },
 
   pickIdentity(id) {
+    this._initV2Fields();
     const ident = IDENTITIES.find(i => i.id === id);
     Player.identity = id;
     Object.assign(Player.stats, ident.init);
@@ -437,7 +457,7 @@ const Game = {
     grid.innerHTML = html;
     // index.html 已有固定底部确认栏，避免动态栏删除 lifeTagsCount
     const countEl = $("lifeTagsCount");
-    if (countEl) countEl.textContent = `已选 ${Player.lifeTags.length} / 4`;
+    if (countEl) countEl.textContent = `已选 ${Player.lifeTags.length} / 12`;
   },
 
   toggleLifeTag(id) {
@@ -465,8 +485,8 @@ const Game = {
           }
         });
       }
-      if (Player.lifeTags.length >= 4) {
-        toast("最多选 4 个标签", "normal", 1500);
+      if (Player.lifeTags.length >= 12) {
+        toast("最多选 12 个标签", "normal", 1500);
         return;
       }
       Player.lifeTags.push(id);
@@ -488,7 +508,7 @@ const Game = {
       }
     });
     const countEl = $("lifeTagsCount");
-    if (countEl) countEl.textContent = `已选 ${Player.lifeTags.length} / 4`;
+    if (countEl) countEl.textContent = `已选 ${Player.lifeTags.length} / 12`;
   },
 
   // v0.9: 彩蛋——屏幕变红+ERROR404
@@ -692,6 +712,11 @@ const Game = {
     if (sanityDelta || moodDelta) {
       this.applyEffects({ sanity: sanityDelta, mood: moodDelta });
     }
+    // v2: 起床选择影响精力
+    if (opt.energyDelta) {
+      Player.energy = clamp(Player.energy + opt.energyDelta, 0, Player.energyMax);
+      logMsg += ` — <i>精力${opt.energyDelta > 0 ? "+" : ""}${opt.energyDelta}</i>`;
+    }
     this.addLog(logMsg);
 
     UI.hideModal();
@@ -780,6 +805,222 @@ const Game = {
     return changes;
   },
 
+  // ========== v2 数值系统 ==========
+  _initV2Fields() {
+    Player.energy = 80; Player.energyMax = 80;
+    Player.studyHoursToday = 0; Player.focusBlocks = 0; Player.restedSinceBlock = true;
+    Player.status = "healthy"; Player.napCount = 0;
+    Player.todaySolo = 0; Player.todaySocial = 0;
+    Player.soloStreak = 0; Player.socialStreak = 0;
+  },
+
+  // 5.1 疲劳曲线（v2 缓降，正常地板 0.40）
+  _fatigueCurve(h) {
+    if (h < 4) return 1.0;
+    if (h < 6) return 0.90;
+    if (h < 8) return 0.80;
+    if (h < 10) return 0.65;
+    if (h < 12) return 0.50;
+    return 0.40; // 地板，不再下跌
+  },
+
+  // 5.2 状态乘数与地板
+  _stateMul(status) {
+    const S = {
+      healthy:    { mul: 1.0, floor: 0.40 },
+      hangover:   { mul: 0.8, floor: 0.30 },
+      allnighter: { mul: 0.8, floor: 0.30 },
+      breakdown:  { mul: 0.7, floor: 0.25 },
+      sick:       { mul: 0.5, floor: 0.20 },
+      severe:     { mul: 0.3, floor: 0.10 },
+    };
+    return S[status] || S.healthy;
+  },
+
+  fatigueCoef(h, status) {
+    const s = this._stateMul(status);
+    return Math.max(this._fatigueCurve(h) * s.mul, s.floor);
+  },
+
+  // 6.3 I/E 人格修正矩阵 + 淡人/浓人
+  applySocialPersona(act, d) {
+    const L = act.socialLoad || "solo";
+    const tags = Player.lifeTags || [];
+    if (tags.includes("iren")) {
+      if (L === "solo")  d.sanity = (d.sanity || 0) * 1.3;
+      if (L === "light") d.sanity = (d.sanity || 0) - 4;
+      if (L === "heavy") { d.sanity = (d.sanity || 0) - 15; d.energy = (d.energy || 0) - 10; }
+    } else if (tags.includes("eren")) {
+      d.sanity = (d.sanity || 0) * (L === "solo" ? 0.7 : 1.3);
+      if (L === "heavy") { d.sanity = (d.sanity || 0) + 4; d.mood = (d.mood || 0) + 3; }
+    }
+    if (tags.includes("danren")) d.sanity = (d.sanity || 0) * 0.7;   // 淡人：波动 -30%
+    if (tags.includes("nongren")) d.sanity = (d.sanity || 0) * 1.5; // 浓人：波动 +50%
+    return d;
+  },
+
+  // 5.1 附加：过劳精神流失（按累计学习时长分档）
+  applyOverworkSanityDrain(dur) {
+    const h = Player.studyHoursToday;
+    let perHour = 0;
+    if (h >= 6 && h < 8) perHour = 1;
+    else if (h >= 8 && h < 10) perHour = 2;
+    else if (h >= 10 && h < 12) perHour = 3;
+    else if (h >= 12) perHour = 4;
+    if (perHour > 0) {
+      Player.stats.sanity = clamp(Player.stats.sanity - Math.round(perHour * dur), 0, 100);
+    }
+  },
+
+  // 执行一个行动 → 更新精力/精神/疲劳/专注/状态；返回 true 表示已跳天（小憩昏睡）
+  applyActionV2(act, duration) {
+    // 小憩次数限制：第 3 次直接昏睡到第二天（隐藏成就）
+    if (act.id === "shuijiao") {
+      Player.napCount = (Player.napCount || 0) + 1;
+      if (Player.napCount >= 3) {
+        this.addLog("😴 <b>又睡了一觉…</b> 这次你直接昏睡到了第二天。");
+        Player.achievements.add("昏睡一天");
+        UI.renderAchievements();
+        toast("🏅 隐藏成就：昏睡一天", "achievement");
+        setTimeout(() => this.endDay(), 800);
+        return true;
+      }
+    }
+    // 聚餐 → 次日宿醉
+    if (act.id === "juhui") Player._hangoverNextDay = true;
+    // v0.9.3: 休息类行动触发学习效率buff（午休/吃饭/小憩/冥想/跑步）
+    if (act.studyBuff && !isStudy) {
+      Player._studyBuff = (Player._studyBuff || 1.0) + act.studyBuff;
+      Player._studyBuffTurns = (Player._studyBuffTurns || 0) + 2;  // 接下来2个学习行动享受加成
+      this.addLog(`✨ <i>获得学习效率+${Math.round(act.studyBuff * 100)}%（剩余${Player._studyBuffTurns}次学习）</i>`);
+    }
+    // 计算精力/精神增量（先过人格修正）
+    const d = {
+      energy: (act.energy != null) ? act.energy : 0,
+      sanity: (act.sanityDelta != null) ? act.sanityDelta : (act.effects.sanity || 0),
+      mood: 0,
+    };
+    this.applySocialPersona(act, d);
+    Player.energy = clamp(Player.energy + Math.round(d.energy), 0, Player.energyMax);
+    Player.stats.sanity = clamp(Player.stats.sanity + Math.round(d.sanity), 0, 100);
+    Player.stats.mood = clamp(Player.stats.mood + Math.round(d.mood || 0), 0, 100);
+    // 社交负荷计数（I/E 彩蛋用）
+    if ((act.socialLoad || "solo") === "solo") Player.todaySolo++;
+    else Player.todaySocial++;
+    // 疲劳 / 专注块
+    const isStudy = act.tag === "学习";
+    if (isStudy) {
+      Player.studyHoursToday += duration;
+      if (Player.restedSinceBlock) { Player.focusBlocks = 1; Player.restedSinceBlock = false; }
+      else Player.focusBlocks++;
+      this.applyOverworkSanityDrain(duration);
+    } else {
+      Player.focusBlocks = 0; Player.restedSinceBlock = true;
+    }
+    this.checkHealthTransition();
+    return false;
+  },
+
+  // 10.2 生病状态机
+  checkHealthTransition() {
+    if (Player.status === "severe") return;
+    if (Player.status === "sick") {
+      if (Player.studyHoursToday >= 8) Player.status = "severe";
+      return;
+    }
+    // 宿醉/通宵：当天学够 2h 自然缓解
+    if ((Player.status === "hangover" || Player.status === "allnighter") && Player.studyHoursToday >= 2) {
+      Player.status = "healthy";
+      return;
+    }
+    // 进入生病：精神见底 / 精力见底 / 过劳累计
+    if (Player.stats.sanity <= 10 || Player.energy <= 0 || Player.studyHoursToday >= 12) {
+      Player.status = "sick";
+      this.addLog("🤒 <b>你病倒了</b> — 效率大跌，建议休息或就医。");
+      toast("🤒 生病了！效率大幅下降", "normal", 2200);
+      return;
+    }
+    // 精神崩溃（未生病时）
+    if (Player.stats.sanity <= 5) Player.status = "breakdown";
+    else if (Player.status === "breakdown" && Player.stats.sanity > 20) Player.status = "healthy";
+  },
+
+  // 刷新精力/精神双条 + 时间轴 + 状态徽章
+  renderV2Status() {
+    const v2 = $("v2Bars");
+    if (v2) {
+      const ePct = Math.round(Player.energy / Player.energyMax * 100);
+      const sPct = Player.stats.sanity;
+      v2.innerHTML = `
+        <div class="v2-bar v2-energy">
+          <span class="v2-bar-label">⚡精力</span>
+          <div class="v2-bar-track"><div class="v2-bar-fill" style="width:${ePct}%"></div></div>
+          <span class="v2-bar-val">${Math.round(Player.energy)}</span>
+        </div>
+        <div class="v2-bar v2-sanity">
+          <span class="v2-bar-label">🧠精神</span>
+          <div class="v2-bar-track"><div class="v2-bar-fill" style="width:${sPct}%"></div></div>
+          <span class="v2-bar-val">${sPct}</span>
+        </div>
+        ${this._statusBadge()}
+      `;
+    }
+    const tl = $("v2Timeline");
+    if (tl) {
+      const total = 23 - 6;
+      const pos = clamp((Player.hour - 6) / total * 100, 0, 100);
+      const studyPct = clamp(Player.studyHoursToday / 12 * 100, 0, 100);
+      const coef = this.fatigueCoef(Player.studyHoursToday, Player.status);
+      tl.innerHTML = `
+        <div class="v2-tl-head"><span>🕐 时间轴</span><span class="v2-tl-coef">效率 ${Math.round(coef * 100)}%</span></div>
+        <div class="v2-tl-track">
+          <div class="v2-tl-study" style="width:${studyPct}%"></div>
+          <div class="v2-tl-now" style="left:${pos}%"></div>
+        </div>
+        <div class="v2-tl-scale"><span>6:00</span><span>12:00</span><span>18:00</span><span>23:00</span></div>
+        <div class="v2-tl-info">今日已学 ${Player.studyHoursToday.toFixed(1)}h · ${this._statusName()}${Player._studyBuffTurns > 0 ? ` · ✨学习加成+${Math.round((Player._studyBuff - 1) * 100)}%（剩${Player._studyBuffTurns}次）` : ''}</div>
+      `;
+    }
+  },
+
+  _statusName() {
+    return ({ healthy: "健康", hangover: "🍻宿醉", allnighter: "🕯️通宵", breakdown: "😵精神崩溃", sick: "🤒生病", severe: "🏥重病" })[Player.status] || "健康";
+  },
+
+  _statusBadge() {
+    if (Player.status === "healthy") return "";
+    return `<span class="v2-badge">${this._statusName()}</span>`;
+  },
+
+  // v0.9.3: 渲染目标卡（参考大厂模拟器规则）
+  renderGoalCard() {
+    let card = $("goalCard");
+    if (!card) return;
+    const goal = this.getGoalCard();
+    const failHtml = goal.fail.map(f => `
+      <div class="goal-fail ${f.danger ? 'danger' : ''}">
+        <span class="goal-fail-label">${f.danger ? '⚠️' : '💀'} ${f.label}</span>
+        <span class="goal-fail-desc">${f.desc}</span>
+      </div>
+    `).join("");
+    card.innerHTML = `
+      <div class="goal-victory">
+        <div class="goal-victory-label">🏆 ${goal.victory.label}</div>
+        <div class="goal-victory-desc">${goal.victory.desc}</div>
+        <div class="goal-victory-progress">${goal.victory.progress}</div>
+      </div>
+      <div class="goal-fails">${failHtml}</div>
+    `;
+  },
+
+  // v0.9.2: 显示今日身份场景
+  _showDailyScene() {
+    const ident = IDENTITIES.find(i => i.id === Player.identity);
+    if (!ident || !ident.dailyScenes || ident.dailyScenes.length === 0) return;
+    const scene = randPick(ident.dailyScenes);
+    setTimeout(() => toast(`📅 今天：${ident.name} · ${scene}`, "normal", 3000), 800);
+  },
+
   addLog(msg) {
     const log = $("logBox");
     if (!log) return;
@@ -815,7 +1056,10 @@ const Game = {
         <div class="ap-label">今日体力</div>
         <div class="ap-dots">${dots.join("")}</div>
       `;
+      this.renderV2Status();
     }
+    // v0.9.3: 渲染目标卡
+    this.renderGoalCard();
 
     const keys = [
       { k: "study", icon: "📚", label: "复习" },
@@ -899,29 +1143,48 @@ const Game = {
     const grid = $("actionsGrid");
     if (!grid) return;
 
-    grid.innerHTML = ACTIONS.map(a => {
-      const apOk = Player.ap >= a.cost;
+    grid.innerHTML = ACTIONS.filter(a => {
+      // 身份专属行动过滤
+      if (a.identity && !a.identity.includes(Player.identity)) return false;
+      return true;
+    }).map(a => {
+      const apOk = true;  // v0.9.2 移除AP限制
       const dur = Array.isArray(a.duration) ? `${a.duration[0]}-${a.duration[1]}h` : `${a.duration}h`;
       const endHour = Player.hour + (Array.isArray(a.duration) ? a.duration[1] : a.duration);
-      const timeOk = endHour <= 23.5;
-      const disabled = !apOk || !timeOk;
-      const reason = !apOk ? "体力不足" : (!timeOk ? "时间不够" : "");
-      const costDots = "⚡".repeat(a.cost);
-      const fx = Object.entries(a.effects).map(([k, v]) => {
-        const icon = { study: "📚", mood: "❤️", money: "💰", relation: "🤝", sanity: "🧠" }[k];
-        return `${icon}${v > 0 ? "+" : ""}${v}`;
-      }).join(" ");
+      const timeOk = endHour <= 26;  // v0.9.3: 允许学到凌晨2点
+      const energyOk = Player.energy > 0 || !a.tag || a.tag !== "学习";
+      const disabled = !timeOk || !energyOk;
+      const reason = !timeOk ? "时间不够" : (!energyOk ? "精力耗尽（休息一下）" : "");
+      const fxParts = [];
+      const renderFx = (key, v, icon) => {
+        if (v === 0 || v == null) return;
+        const cls = v > 0 ? 'fx-pos' : 'fx-neg';
+        fxParts.push(`<span class="fx-tag ${cls}">${icon}${v > 0 ? "+" : ""}${v}</span>`);
+      };
+      Object.entries(a.effects).forEach(([k, v]) => {
+        if (k === "sanity") return; // 精神改由下方 sanityDelta 显示
+        const icon = { study: "📚", mood: "❤️", money: "💰", relation: "🤝" }[k];
+        renderFx(k, v, icon);
+      });
+      renderFx('energy', a.energy, "⚡");
+      renderFx('sanity', a.sanityDelta, "🧠");
+      // 行动类型徽章
+      const tagBadge = a.tag === "学习" ? '<span class="tag-badge study">学习</span>'
+        : a.tag === "休闲" ? '<span class="tag-badge rest">休闲</span>'
+        : a.tag === "社交" ? '<span class="tag-badge social">社交</span>'
+        : a.tag === "生计" ? '<span class="tag-badge work">生计</span>'
+        : '';
       return `
-        <div class="action-card ${disabled ? "disabled" : ""}" data-action="${a.id}"
+        <div class="action-card ${disabled ? "disabled" : ""} ${a.identity ? 'action-idol' : ''}" data-action="${a.id}"
              onclick="${disabled ? `Game.hintBlock('${reason}')` : `Game.doAction('${a.id}')`}">
           <div class="action-top">
             <span class="action-icon">${a.icon}</span>
-            <span class="action-cost">${costDots}</span>
+            <span class="action-duration">⏱ ${dur}</span>
           </div>
           <div class="action-name">${a.name}</div>
           <div class="action-desc">${a.desc}</div>
-          <div class="action-time">⏱ ${dur}</div>
-          <div class="action-fx">${fx}</div>
+          <div class="action-fx">${fxParts.join(" ")}</div>
+          ${tagBadge}
         </div>
       `;
     }).join("");
@@ -930,9 +1193,9 @@ const Game = {
     if (endBtn) {
       endBtn.style.display = "block";
       if (Player.hour >= 22) {
-        endBtn.textContent = "🌙 该睡了 · 设置闹钟";
-      } else if (Player.ap === 0) {
-        endBtn.textContent = "💤 体力耗尽 · 提前结束今日";
+        endBtn.textContent = "🌙 该睡了 · 设置闹钟（熬夜伤身）";
+      } else if (Player.hour >= 26) {
+        endBtn.textContent = "🥵 凌晨2点 · 必须睡了";
       } else {
         endBtn.textContent = `🌙 结束今日 · 当前 ${fmtHour(Player.hour)}`;
       }
@@ -947,7 +1210,11 @@ const Game = {
   doAction(actionId) {
     const act = ACTIONS.find(a => a.id === actionId);
     if (!act) return;
-    if (Player.ap < act.cost) return;
+    // v0.9.2 移除AP检查，仅检查时间
+    if (Player.energy <= 0 && act.tag === "学习") {
+      toast("精力耗尽，休息一下再继续", "warning");
+      return;
+    }
 
     // P0: 执行脉冲视觉反馈
     UI.pulseCard(actionId);
@@ -959,11 +1226,29 @@ const Game = {
       duration = Math.round(duration * 10) / 10;
     }
 
-    Player.ap -= act.cost;
     Player.hour += duration;
+    // v0.9.2: AP不再消耗，仅时间推进
 
-    // 数值
-    const changes = this.applyEffects(act.effects);
+    // v2 数值系统：精力/精神/疲劳/状态（精神由 sanityDelta 负责，故从 act.effects 剔除 sanity 防双重计算）
+    const eff = { ...act.effects };
+    delete eff.sanity;
+    const v2SkipDay = this.applyActionV2(act, duration);
+    if (v2SkipDay) return; // 小憩昏睡已跳天，中断后续逻辑
+    // v2 学习效率折算：疲劳系数 × 精力系数 × 连续专注系数（仅正收益的学习动作）
+    if (eff.study && eff.study > 0) {
+      const coef = this.fatigueCoef(Player.studyHoursToday, Player.status);
+      const energyCoef = 0.5 + 0.5 * Player.energy / Player.energyMax;
+      const focusCoef = Player.focusBlocks >= 4 ? Math.pow(0.9, Player.focusBlocks - 3) : 1;
+      // v0.9.3: studyBuff 临时学习加成（午休/吃饭后获得）
+      let buffCoef = 1.0;
+      if (Player._studyBuffTurns > 0) {
+        buffCoef = Player._studyBuff;
+        Player._studyBuffTurns--;
+        if (Player._studyBuffTurns <= 0) Player._studyBuff = 1.0;
+      }
+      eff.study = Math.round(eff.study * coef * energyCoef * focusCoef * buffCoef);
+    }
+    const changes = this.applyEffects(eff);
 
     const flavor = randPick(act.flavor);
     this.addLog(`${act.icon} <b>${act.name}</b>（${duration}h） — ${flavor}`);
@@ -976,6 +1261,7 @@ const Game = {
 
     // P0: UI局部更新（只更新数值，不重建DOM）
     UI.renderStatsDiff(changes);
+    this.renderV2Status();   // 刷新精力/精神条、时间轴、状态徽章
     this.renderPathPartners();
     this.renderActions();
 
@@ -1051,6 +1337,13 @@ const Game = {
     Player.sleepHours = finalSleep;
     Player.nightAlarm = wakeHour;
 
+    // 宿醉 / 通宵 影响次日（仅健康时叠加）
+    if (Player.status === "healthy") {
+      if (Player._hangoverNextDay) { Player.status = "hangover"; this.addLog("🍻 宿醉未醒，明天状态不佳。"); }
+      else if (now >= 24) { Player.status = "allnighter"; this.addLog("🕯️ 通宵后遗，明天状态不佳。"); }
+    }
+    Player._hangoverNextDay = false;
+
     this.addLog(`🌙 <b>${fmtHour(now > 24 ? now - 24 : now)} 入睡</b>，闹钟设在 ${wakeHour}:00（计划睡 ${finalSleep.toFixed(1)} 小时）`);
 
     UI.hideModal();
@@ -1075,10 +1368,32 @@ const Game = {
   nextDay() {
     if (this.checkBreakdown()) return;
 
+    // —— 上一天结算：I/E 连续彩蛋 + 生病康复 ——
+    const learnedYesterday = Player.studyHoursToday;
+    const pureSolo = Player.todaySolo > 0 && Player.todaySocial === 0;
+    const noSocial = Player.todaySocial === 0;
+    Player.soloStreak = pureSolo ? Player.soloStreak + 1 : 0;
+    Player.socialStreak = noSocial ? Player.socialStreak + 1 : 0;
+    if (Player.lifeTags.includes("iren") && Player.soloStreak >= 3) {
+      this.applyEffects({ study: 5 });
+      this.addLog("🤐 <i>连续独处充电，社恐高效期：复习+5</i>");
+    }
+    if (Player.lifeTags.includes("eren") && Player.socialStreak >= 4) {
+      this.applyEffects({ sanity: 3 });
+      this.addLog("🎤 <i>憋坏了终于出门，精神+3</i>");
+    }
+    if (Player.status === "sick" && learnedYesterday < 3) Player.status = "healthy";
+    else if (Player.status === "severe") Player.status = "sick";
+
     Player.daysPlayed++;
     Player.day++;
-    Player.ap = Player.apMax;
+    Player.ap = 999;
     Player._eventTriggeredToday = false;  // P0 修复: 新一天重置事件触发标记
+    Player.studyHoursToday = 0; Player.focusBlocks = 0; Player.restedSinceBlock = true;
+    Player.napCount = 0; Player.todaySolo = 0; Player.todaySocial = 0;
+    Player._lateNightWarned = false;  // v0.9.3 重置熬夜警告
+    // v0.9.2: 身份今日场景提示（每天首次进入游戏时显示）
+    this._showDailyScene();
 
     if (Player.day > 30) {
       Player.day = 1;
@@ -1236,6 +1551,17 @@ const Game = {
       monthsPlayed: Math.floor(Player.daysPlayed / 30),
       identity: Player.identity, path: Player.path,
       partners: Player.partners, lifeTags: Player.lifeTags,
+      // v0.7+ 状态字段（修复 cond 函数无法访问这些字段的问题）
+      moyuCount: Player.moyuCount || 0,
+      moyuWarned: Player.moyuWarned || false,
+      moyuPunished: Player.moyuPunished || false,
+      province: Player.province,
+      _isShangan: Player._isShangan,
+      _mockeryNPCs: Player._mockeryNPCs || [],
+      // v2 数值系统字段
+      energy: Player.energy, energyMax: Player.energyMax,
+      status: Player.status, studyHoursToday: Player.studyHoursToday,
+      napCount: Player.napCount,
     };
   },
 
@@ -1246,6 +1572,10 @@ const Game = {
     const candidates = EVENTS.filter(e => {
       if (e.id === "ai_placeholder") return false;
       if (Player.usedEvents.has(e.id)) return false;
+      if (e.timeWindow) {
+        const [start, end] = e.timeWindow;
+        if (Player.hour < start || Player.hour > end) return false;
+      }
       if (e.cond && !e.cond(ctx)) return false;
       return true;
     });
@@ -1429,9 +1759,10 @@ const Game = {
     const prov = PROVINCES.find(p => p.id === pid);
     if (!prov || !prov.easterEggEvent) return false;
 
-    // 节奏：地区彩蛋每 5-8 天最多触发1次
+    // 节奏：地区彩蛋每 5-8 天最多触发1次（修复随机竞态：触发时固定间隔）
     const daysSince = Player.daysPlayed - (Player.lastProvinceEventDay || 0);
-    if (daysSince < 5 + Math.floor(Math.random() * 4)) return false;
+    const interval = Player._provinceEventInterval || 5;
+    if (daysSince < interval) return false;
 
     // 只触发该地区的彩蛋事件
     const event = EVENTS.find(e => e.id === prov.easterEggEvent);
@@ -1440,6 +1771,7 @@ const Game = {
 
     Player.usedEvents.add(event.id);
     Player.lastProvinceEventDay = Player.daysPlayed;
+    Player._provinceEventInterval = 5 + Math.floor(Math.random() * 4); // 下次间隔固定
     this.showEvent(event);
     return true;
   },
@@ -1533,6 +1865,7 @@ const Game = {
     if (mockery.includes("butcher")) this._shanganQueue.push("shangan_butcher_call");
     if (mockery.includes("laowang")) this._shanganQueue.push("shangan_laowang_call");
     if (mockery.includes("biaomei")) this._shanganQueue.push("shangan_biaomei_call");
+    if (mockery.includes("erji")) this._shanganQueue.push("shangan_erji_call");
     // 第三波：家族群发言（嘲讽NPC>=2时触发）
     if (mockery.length >= 2) this._shanganQueue.push("shangan_laoye_qing");
 
@@ -1587,10 +1920,31 @@ const Game = {
 
   pickEnding() {
     const s = Player.stats;
+    // v0.9.3: 清晰的目标/失败条件（参考大厂模拟器规则）
+    // 失败条件优先判定
+    if (s.sanity <= 0) return ENDINGS.find(e => e.id === "bengkui") || DEFAULT_ENDING;
+    if (s.mood <= 0) return ENDINGS.find(e => e.id === "fangi") || DEFAULT_ENDING;
+    // 胜利条件：复习≥75 + 精神≥30 即可触发上岸判定
     for (const ending of ENDINGS) {
       if (ending.cond && ending.cond(s)) return ending;
     }
     return DEFAULT_ENDING;
+  },
+
+  // v0.9.3: 目标卡（参考大厂模拟器的"晋升条件速查"）
+  getGoalCard() {
+    const s = Player.stats;
+    const studyPct = Math.min(100, s.study);
+    const sanityPct = s.sanity;
+    const daysLeft = Player.totalDays - Player.daysPlayed;
+    return {
+      victory: { label: "上岸条件", desc: "复习≥75 + 精神≥30 + 考试分≥60", progress: `${studyPct}/75 📚 · ${sanityPct}/30 🧠` },
+      fail: [
+        { label: "精神崩溃", desc: "精神≤0", danger: sanityPct <= 15 },
+        { label: "心态归零", desc: "心态≤0 → 放弃考公", danger: s.mood <= 15 },
+        { label: "时间耗尽", desc: `${daysLeft}天后未上岸`, danger: daysLeft <= 30 },
+      ],
+    };
   },
 
   playFanjinCutscene(cb) {
@@ -1643,7 +1997,61 @@ const Game = {
         `;
       }).join("");
     }
+    // v0.9.2: 生成可截图的精美分享卡
+    this._renderShareCard(ending, achs);
+    // 自动记录到排行榜
+    if (typeof Leaderboard !== "undefined") Leaderboard.recordMyRecord();
     showScreen("screen-ending");
+  },
+
+  // v0.9.2: 渲染分享卡（用于html2canvas截图）
+  _renderShareCard(ending, achs) {
+    let card = $("shareCard");
+    if (!card) {
+      card = document.createElement("div");
+      card.id = "shareCard";
+      card.className = "share-card";
+      document.body.appendChild(card);
+    }
+    const idName = (IDENTITIES.find(x => x.id === Player.identity) || {}).name || "玩家";
+    const idEmoji = (IDENTITIES.find(x => x.id === Player.identity) || {}).emoji || "🧑";
+    const totalScore = (typeof Leaderboard !== "undefined") ? Leaderboard._calcTotalScore() : 0;
+    const days = Player.daysPlayed || 0;
+    const months = Math.floor(days / 30);
+    const topAches = achs.slice(0, 5);
+    const rarity = achs.length >= 20 ? "传说级考公人" : achs.length >= 10 ? "史诗级考公人" : achs.length >= 5 ? "稀有级考公人" : "普通考公人";
+    card.innerHTML = `
+      <div class="share-card-inner">
+        <div class="share-header">
+          <div class="share-logo">🎯 上岸模拟器</div>
+          <div class="share-subtitle">我的 2026 考公人档案</div>
+        </div>
+        <div class="share-character">
+          <div class="share-emoji">${ending.emoji}</div>
+          <div class="share-info">
+            <div class="share-name">${idEmoji} ${idName}</div>
+            <div class="share-ending">${ending.title}</div>
+            <div class="share-meta">${days}天备考 · ${rarity} · ${totalScore}分</div>
+          </div>
+        </div>
+        <div class="share-stats">
+          <div class="share-stat"><div class="share-stat-icon">📚</div><div class="share-stat-val">${Player.stats.study}</div><div class="share-stat-label">复习</div></div>
+          <div class="share-stat"><div class="share-stat-icon">❤️</div><div class="share-stat-val">${Player.stats.mood}</div><div class="share-stat-label">心态</div></div>
+          <div class="share-stat"><div class="share-stat-icon">💰</div><div class="share-stat-val">${Player.stats.money}</div><div class="share-stat-label">钱包</div></div>
+          <div class="share-stat"><div class="share-stat-icon">🤝</div><div class="share-stat-val">${Player.stats.relation}</div><div class="share-stat-label">关系</div></div>
+          <div class="share-stat"><div class="share-stat-icon">🧠</div><div class="share-stat-val">${Player.stats.sanity}</div><div class="share-stat-label">精神</div></div>
+        </div>
+        ${topAches.length > 0 ? `
+        <div class="share-achs">
+          <div class="share-achs-title">🏅 重要成就</div>
+          <div class="share-ach-list">${topAches.map(a => `<span class="share-ach-chip">${a}</span>`).join("")}</div>
+        </div>` : ''}
+        <div class="share-footer">
+          <div class="share-narrative">${ending.sub}</div>
+          <div class="share-qr">#上岸模拟器 #考公 #上岸</div>
+        </div>
+      </div>
+    `;
   },
 
   reset() {
@@ -1653,8 +2061,8 @@ const Game = {
     Player.day = 1;
     Player.hour = 8;
     Player.daysPlayed = 0;
-    Player.ap = 4;
-    Player.apMax = 4;
+    Player.ap = 999;
+    Player.apMax = 999;
     Player.sleepStart = 23;
     Player.sleepHours = 8;
     Player.consecutiveEarly = 0;
@@ -1691,6 +2099,12 @@ const Game = {
     Player._bombardmentDone = false;
     this._shanganQueue = [];
     this._shanganMode = false;
+    // v2 数值系统重置
+    Player.energy = 80; Player.energyMax = 80;
+    Player.studyHoursToday = 0; Player.focusBlocks = 0; Player.restedSinceBlock = true;
+    Player.status = "healthy"; Player.napCount = 0;
+    Player.todaySolo = 0; Player.todaySocial = 0;
+    Player.soloStreak = 0; Player.socialStreak = 0;
     const log = $("logBox");
     if (log) log.innerHTML = "";
     // P0: 清掉旧存档，新开一局不读旧档
@@ -1719,8 +2133,10 @@ const AI = {
 const Share = {
   // v0.5: 升级为支持图片分享（html2canvas + canvas API 双重降级）
   screenshot() {
-    // 优先尝试 html2canvas 图片模式
-    if (typeof html2canvas !== "undefined" && $("endingContainer")) {
+    // v0.9.2: 优先截取专门的shareCard（精美设计）
+    if (typeof html2canvas !== "undefined" && $("shareCard")) {
+      this._screenshotImage();
+    } else if (typeof html2canvas !== "undefined" && $("endingContainer")) {
       this._screenshotImage();
     } else {
       this._screenshotText();
@@ -1729,7 +2145,7 @@ const Share = {
 
   async _screenshotImage() {
     try {
-      const target = $("endingContainer") || $("screen-ending");
+      const target = $("shareCard") || $("endingContainer") || $("screen-ending");
       toast("🎨 正在生成分享图...", "achievement", 1500);
       const canvas = await html2canvas(target, {
         backgroundColor: "#fdf8ee",
@@ -1800,6 +2216,151 @@ ${achs ? "\n🏅 成就：\n" + achs + "\n" : ""}
 #上岸模拟器 #考公 #公考 #行测 #申论 #考公人`;
   }
 };
+
+// ========== 排行榜 v0.9.2 ==========
+const Leaderboard = {
+  KEY: "kaogong_leaderboard",
+  currentTab: "my",
+
+  // 假想好友（演示用本地排行榜）
+  DEMO_FRIENDS: [
+    { name: "老王", emoji: "👨", identity: "985", totalScore: 720, ending: "上岸", survivalDays: 365, isFriend: true },
+    { name: "表妹", emoji: "👧", identity: "sanben", totalScore: 680, ending: "二战", survivalDays: 240, isFriend: true },
+    { name: "室友小李", emoji: "🧑", identity: "985", totalScore: 650, ending: "上岸", survivalDays: 320, isFriend: true },
+    { name: "研友小张", emoji: "👨‍🎓", identity: "bianzhi", totalScore: 590, ending: "崩溃", survivalDays: 180, isFriend: true },
+    { name: "二狗", emoji: "🐶", identity: "haigui", totalScore: 540, ending: "上岸", survivalDays: 410, isFriend: true },
+    { name: "上岸第一神", emoji: "🧙", identity: "xuandiao", totalScore: 920, ending: "上岸", survivalDays: 365, isFriend: true },
+  ],
+
+  show() {
+    showScreen("screen-leaderboard");
+    this.recordMyRecord();
+    this.render(this.currentTab);
+    this._setupTabs();
+  },
+
+  close() {
+    showScreen("screen-ending");
+  },
+
+  _setupTabs() {
+    document.querySelectorAll(".lb-tab").forEach(t => {
+      t.onclick = () => {
+        document.querySelectorAll(".lb-tab").forEach(x => x.classList.remove("active"));
+        t.classList.add("active");
+        this.currentTab = t.dataset.tab;
+        this.render(this.currentTab);
+      };
+    });
+  },
+
+  // 记录我自己的成绩
+  recordMyRecord() {
+    const myData = {
+      name: Player._playerName || "我",
+      emoji: "🧑‍💻",
+      identity: Player.identity,
+      totalScore: this._calcTotalScore(),
+      ending: $("endingTitle")?.textContent || "结局",
+      survivalDays: Player.daysPlayed || 0,
+      isMe: true,
+      timestamp: Date.now(),
+    };
+    try {
+      const all = this._getAll();
+      const idx = all.findIndex(r => r.isMe);
+      if (idx >= 0) all[idx] = myData; else all.push(myData);
+      localStorage.setItem(this.KEY, JSON.stringify(all));
+    } catch(e) {}
+  },
+
+  // 综合分 = 复习*2 + 精神*1 + 心态*1 + 钱包*0.5 + 关系*0.5 + 成就*5
+  _calcTotalScore() {
+    const s = Player.stats || {};
+    const achs = (Player.achievements && Player.achievements.size) || 0;
+    return Math.round(s.study * 2 + s.sanity + s.mood + s.money * 0.5 + s.relation * 0.5 + achs * 5);
+  },
+
+  _getAll() {
+    try { return JSON.parse(localStorage.getItem(this.KEY) || "[]"); }
+    catch(e) { return []; }
+  },
+
+  addFriend() {
+    toast("👋 已添加 6 位考公研友", "achievement", 1500);
+  },
+
+  share() {
+    const score = this._calcTotalScore();
+    const text = `我在《上岸模拟器》里考了 ${score} 分！\n#上岸模拟器 #考公人`;
+    if (navigator.clipboard) {
+      navigator.clipboard.writeText(text).then(() => toast("✓ 成绩已复制，去挑战好友吧！"));
+    } else {
+      toast("浏览器不支持复制");
+    }
+  },
+
+  render(tab) {
+    const listEl = $("lbList");
+    const countEl = $("lbTotalCount");
+    if (!listEl) return;
+
+    // 合并自己 + 假想好友
+    const myRecords = this._getAll();
+    const mySelf = myRecords.find(r => r.isMe);
+    const all = mySelf ? [...this.DEMO_FRIENDS, mySelf] : this.DEMO_FRIENDS;
+
+    // 排序
+    let sorted = [...all];
+    if (tab === "total") {
+      sorted.sort((a,b) => b.totalScore - a.totalScore);
+    } else if (tab === "survival") {
+      sorted.sort((a,b) => b.survivalDays - a.survivalDays);
+    } else if (tab === "ending") {
+      sorted.sort((a,b) => (a.ending === "上岸" ? -1 : 1) - (b.ending === "上岸" ? -1 : 1));
+    } else {
+      // my - 显示我 + 3个最近好友
+      const me = mySelf || all[0];
+      const friends = this.DEMO_FRIENDS.slice(0, 3);
+      sorted = [me, ...friends];
+    }
+
+    if (countEl) countEl.textContent = all.length;
+
+    const medals = ["🥇", "🥈", "🥉"];
+    listEl.innerHTML = sorted.map((r, i) => {
+      const rank = i + 1;
+      const rankClass = rank === 1 ? "lb-top1" : rank === 2 ? "lb-top2" : rank === 3 ? "lb-top3" : "";
+      const selfClass = r.isMe ? "lb-self" : "";
+      const idName = (IDENTITIES.find(x => x.id === r.identity) || {}).name || r.identity;
+      return `
+        <div class="lb-item ${rankClass} ${selfClass}">
+          <div class="lb-rank">${rank <= 3 ? medals[rank-1] : rank}</div>
+          <div class="lb-avatar">${r.emoji}</div>
+          <div class="lb-info">
+            <div class="lb-name">
+              ${r.name}
+              <span class="lb-tag">${idName}</span>
+              ${r.isMe ? '<span class="lb-tag lb-self-tag">我</span>' : ''}
+            </div>
+            <div class="lb-meta">结局：${r.ending} · 存活 ${r.survivalDays} 天</div>
+          </div>
+          <div>
+            <div class="lb-score">${r.totalScore}</div>
+            <div class="lb-score-unit">分</div>
+          </div>
+        </div>
+      `;
+    }).join("");
+
+    if (sorted.length === 0) {
+      listEl.innerHTML = '<div style="text-align:center;color:#9ca3af;padding:40px 0;">暂无数据</div>';
+    }
+  }
+};
+
+// 兼容：旧代码可能用 wx.x，这里给个简化封装
+// （无需，localStorage 原生可用）
 
 const Settings = {
   open() {
