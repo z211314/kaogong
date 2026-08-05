@@ -1,10 +1,17 @@
 /**
- * 《上岸模拟器》 v0.7.1 · 核心逻辑
- * v0.7.1: 摸鱼链节奏优化（5次警告/7次处罚）+ ☕图标+ 985事件重写+ 移动端防挤压
+ * 《上岸模拟器》 v0.9.3 · 核心逻辑
+ * v0.9.3: 时间放宽到凌晨2点 + 学习效率buff + 目标卡系统
+ * v0.9.2: 体力系统重构 + 身份差异化 + 分享系统 + 排行榜
+ * v0.9.1: 文档体系 + 小程序骨架
+ * v0.9: 数值系统v2 + 19新事件 + 7bug修复 + Apple Design System
+ * v0.8: 地区菜单系统 + 范进第四阶段消息轰炸
  * v0.7: 身份专属事件引擎 + 7身份29事件 + 58新成就 + 摸鱼越界惩罚系统
  * v0.6: 续读功能 + 事件频率+权重修复 + 模态关闭手势 + 成就bug修复
  * v0.5: 存档系统 + 模态遮罩 + 执行脉冲 + UI局部更新 + 事件稀有度引擎
  */
+
+// ========== 全局版本号（唯一真相源，所有页面统一引用） ==========
+const GAME_VERSION = 'v0.9.3';
 
 // ========== 玩家状态 ==========
 const Player = {
@@ -223,12 +230,21 @@ const UI = {
 // ========== 主流程 ==========
 const Game = {
   init() {
+    this.injectVersion();
     this.renderIdentities();
     this.renderLifeTags();
     this.renderMonths();
     // P0: 检查存档显示"继续游戏"按钮
     this.renderContinueButton();
     showScreen("screen-start");
+  },
+
+  // 统一注入版本号到所有页面元素（唯一真相源：GAME_VERSION）
+  injectVersion() {
+    const set = (id, html) => { const el = $(id); if (el) el.innerHTML = html; };
+    set("logoTag", `${GAME_VERSION} · 24h时间制 · 起床/赖床/熬夜系统 · 存档/模态/事件引擎 · 排行榜`);
+    set("startFooter", `${GAME_VERSION} · 存档/续读 · 模态 · 事件引擎 · 排行榜 · 移动端`);
+    set("endingFooter", `《上岸模拟器》${GAME_VERSION}`);
   },
 
   renderContinueButton() {
