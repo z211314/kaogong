@@ -223,6 +223,51 @@ const UI = {
     if (!card) return;
     card.classList.add("just-executed");
     setTimeout(() => card.classList.remove("just-executed"), 700);
+  },
+
+  // 在指定元素中心弹出数值飘字（参考大厂模拟器微信气泡）
+  floatNumbers(card, changes) {
+    if (!card || !changes || !changes.length) return;
+    const rect = card.getBoundingClientRect();
+    const baseX = rect.left + rect.width / 2;
+    const baseY = rect.top + rect.height / 2;
+    // 每个 change 横向错开
+    const total = changes.length;
+    const startX = baseX - (total - 1) * 18;
+    changes.forEach((text, i) => {
+      const span = document.createElement("div");
+      span.className = "float-num";
+      // 颜色：含 +数字=绿，含 -数字=红，其它=蓝
+      if (/\+[1-9]/.test(text)) span.classList.add("positive");
+      else if (/-[1-9]/.test(text)) span.classList.add("negative");
+      else span.classList.add("neutral");
+      span.textContent = text.replace(/^[^\s]+\s/, "");  // 去掉前面的 emoji+label，留 "+5"
+      span.style.left = (startX + i * 36) + "px";
+      span.style.top = baseY + "px";
+      document.body.appendChild(span);
+      setTimeout(() => span.remove(), 1300);
+    });
+  },
+
+  // 行动卡片执行进度条（动画 ~400ms）
+  showExecutingProgress(card, durationMs = 400) {
+    return new Promise(resolve => {
+      if (!card) return resolve();
+      card.classList.add("executing");
+      card.style.setProperty("--exec-progress", "0%");
+      const start = performance.now();
+      const tick = (now) => {
+        const pct = Math.min(100, (now - start) / durationMs * 100);
+        card.style.setProperty("--exec-progress", pct + "%");
+        if (pct < 100) requestAnimationFrame(tick);
+        else {
+          card.classList.remove("executing");
+          card.style.removeProperty("--exec-progress");
+          resolve();
+        }
+      };
+      requestAnimationFrame(tick);
+    });
   }
 };
 // （删除了第221行重复的 toast 定义）
@@ -1232,8 +1277,8 @@ const Game = {
       return;
     }
 
-    // P0: 执行脉冲视觉反馈
-    UI.pulseCard(actionId);
+    // 拿到卡片元素（用于进度条 + 飘字定位）
+    const card = document.querySelector(`.action-card[data-action="${actionId}"]`);
 
     // 实际时长（可能为随机区间）
     let duration = act.duration;
@@ -1242,64 +1287,68 @@ const Game = {
       duration = Math.round(duration * 10) / 10;
     }
 
-    Player.hour += duration;
-    // v0.9.2: AP不再消耗，仅时间推进
-
-    // v2 数值系统：精力/精神/疲劳/状态（精神由 sanityDelta 负责，故从 act.effects 剔除 sanity 防双重计算）
-    const eff = { ...act.effects };
-    delete eff.sanity;
-    const v2SkipDay = this.applyActionV2(act, duration);
-    if (v2SkipDay) return; // 小憩昏睡已跳天，中断后续逻辑
-    // v2 学习效率折算：疲劳系数 × 精力系数 × 连续专注系数（仅正收益的学习动作）
-    if (eff.study && eff.study > 0) {
-      const coef = this.fatigueCoef(Player.studyHoursToday, Player.status);
-      const energyCoef = 0.5 + 0.5 * Player.energy / Player.energyMax;
-      const focusCoef = Player.focusBlocks >= 4 ? Math.pow(0.9, Player.focusBlocks - 3) : 1;
-      // v0.9.3: studyBuff 临时学习加成（午休/吃饭后获得）
-      let buffCoef = 1.0;
-      if (Player._studyBuffTurns > 0) {
-        buffCoef = Player._studyBuff;
-        Player._studyBuffTurns--;
-        if (Player._studyBuffTurns <= 0) Player._studyBuff = 1.0;
+    // 异步执行：先跑进度条，再应用数值变化 + 飘字反馈
+    UI.showExecutingProgress(card, 400).then(() => {
+      // P0: 执行脉冲视觉反馈（脉冲 + 数值飘字）
+      UI.pulseCard(actionId);
+      Player.hour += duration;
+      // v2 数值系统：精力/精神/疲劳/状态
+      const eff = { ...act.effects };
+      delete eff.sanity;
+      const v2SkipDay = this.applyActionV2(act, duration);
+      if (v2SkipDay) return; // 小憩昏睡已跳天，中断后续逻辑
+      // v2 学习效率折算
+      if (eff.study && eff.study > 0) {
+        const coef = this.fatigueCoef(Player.studyHoursToday, Player.status);
+        const energyCoef = 0.5 + 0.5 * Player.energy / Player.energyMax;
+        const focusCoef = Player.focusBlocks >= 4 ? Math.pow(0.9, Player.focusBlocks - 3) : 1;
+        let buffCoef = 1.0;
+        if (Player._studyBuffTurns > 0) {
+          buffCoef = Player._studyBuff;
+          Player._studyBuffTurns--;
+          if (Player._studyBuffTurns <= 0) Player._studyBuff = 1.0;
+        }
+        eff.study = Math.round(eff.study * coef * energyCoef * focusCoef * buffCoef);
       }
-      eff.study = Math.round(eff.study * coef * energyCoef * focusCoef * buffCoef);
-    }
-    const changes = this.applyEffects(eff);
+      const changes = this.applyEffects(eff);
 
-    const flavor = randPick(act.flavor);
-    this.addLog(`${act.icon} <b>${act.name}</b>（${duration}h） — ${flavor}`);
-    Player.actionLog.push(act.id);
+      const flavor = randPick(act.flavor);
+      this.addLog(`${act.icon} <b>${act.name}</b>（${duration}h） — ${flavor}`);
+      Player.actionLog.push(act.id);
 
-    if (this.checkBreakdown()) {
-      SaveSystem.autoSave("崩溃结局");
-      return;
-    }
+      // 数值飘字（参考大厂模拟器微信气泡反馈）
+      UI.floatNumbers(card, changes);
 
-    // P0: UI局部更新（只更新数值，不重建DOM）
-    UI.renderStatsDiff(changes);
-    this.renderV2Status();   // 刷新精力/精神条、时间轴、状态徽章
-    this.renderPathPartners();
-    this.renderActions();
+      if (this.checkBreakdown()) {
+        SaveSystem.autoSave("崩溃结局");
+        return;
+      }
 
-    // v0.8: 地区彩蛋事件（优先级最高，独立于身份事件）
-    if (this.triggerProvinceEvent()) return;
+      // P0: UI局部更新（只更新数值，不重建DOM）
+      UI.renderStatsDiff(changes);
+      this.renderV2Status();
+      this.renderPathPartners();
+      this.renderActions();
 
-    // v0.7: 身份事件引擎（优先级最高：强制触发的警告/处罚会立即打断）
-    if (this.triggerIdentityEvent()) return;
+      // v0.8: 地区彩蛋事件
+      if (this.triggerProvinceEvent()) return;
+      // v0.7: 身份事件引擎
+      if (this.triggerIdentityEvent()) return;
 
-    // P0 修复: 每日1次强触发 + 行动间20%小概率额外事件
-    if (!Player._eventTriggeredToday && Player.actionLog.length >= 2) {
-      Player._eventTriggeredToday = true;
-      if (this.triggerRandomEvent()) return;
-    } else if (Player._eventTriggeredToday && Math.random() < 0.2) {
-      if (this.triggerRandomEvent()) return;
-    }
+      // P0 修复: 每日1次强触发 + 行动间20%小概率额外事件
+      if (!Player._eventTriggeredToday && Player.actionLog.length >= 2) {
+        Player._eventTriggeredToday = true;
+        if (this.triggerRandomEvent()) return;
+      } else if (Player._eventTriggeredToday && Math.random() < 0.2) {
+        if (this.triggerRandomEvent()) return;
+      }
 
-    // 自动判定：超过22:30，强制询问是否睡觉
-    if (Player.hour >= 22.5) {
-      setTimeout(() => this.endDay(), 600);
-      return;
-    }
+      // 自动判定：超过22:30，强制询问是否睡觉
+      if (Player.hour >= 22.5) {
+        setTimeout(() => this.endDay(), 600);
+        return;
+      }
+    });
   },
 
   // ========== 结束今日（睡觉）==========
